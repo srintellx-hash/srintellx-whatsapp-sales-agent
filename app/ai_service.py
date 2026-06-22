@@ -1,0 +1,412 @@
+"""AI agent built on the Chat Completions API (Groq / OpenAI compatible).
+
+Responsibilities:
+  * Load the knowledge base (markdown) once at startup.
+  * Assemble the system instructions from the SrintellX persona + KB + live
+    lead context.
+  * Expose tools the model can call: capture_lead, log_objection,
+    get_demo_slots, book_demo, escalate_to_human.
+  * Run an agent loop that executes tool calls and returns the final reply.
+
+The model is instructed to answer ONLY from the knowledge base and never to
+invent pricing or features.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List
+
+from openai import AsyncOpenAI
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.calendar_service import calendar_service
+from app.config import settings
+from app.lead_service import log_objection, set_interest, update_lead
+from app.models import BookingStatus, Contact, DemoBooking, InterestLevel, ObjectionType
+from app.utils import get_logger, now_tz, tz
+
+log = get_logger(__name__)
+
+KB_DIR = Path(__file__).resolve().parent.parent / "knowledge_base"
+_KB_FILES = ["company", "features", "pricing", "roi", "objections", "faq", "demo"]
+
+_client: AsyncOpenAI | None = None
+
+
+def _get_client() -> AsyncOpenAI:
+    global _client
+    if _client is None:
+        _client = AsyncOpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+        )
+    return _client
+
+
+def load_knowledge_base() -> str:
+    parts: List[str] = []
+    for name in _KB_FILES:
+        path = KB_DIR / f"{name}.md"
+        if path.exists():
+            parts.append(f"\n## SOURCE: {name}.md\n{path.read_text(encoding='utf-8')}")
+        else:
+            log.warning("Knowledge base file missing: %s", path)
+    return "\n".join(parts)
+
+
+_KNOWLEDGE_BASE = load_knowledge_base()
+
+
+PERSONA = f"""You are the SrintellX AI Assistant, acting as a professional clinic consultant for SrintellX.
+
+You talk to clinic owners, doctors, dentists, physiotherapists and healthcare \
+businesses over WhatsApp. SrintellX helps clinics automate patient calls and \
+WhatsApp inquiries using AI (an AI voice receptionist + AI WhatsApp assistant, \
+appointment handling, missed-call response, after-hours availability).
+
+PRIMARY OBJECTIVE
+Help qualified clinics understand how SrintellX improves patient communication \
+and guide interested ones toward booking a live demo.
+
+POSITIONING
+- Focus on clinic outcomes, NOT on the technology. Avoid AI jargon and buzzwords.
+- Key themes: missed patient inquiries, faster response, after-hours availability, \
+reception support, better patient experience.
+- Position SrintellX as SUPPORT for reception staff, never as a replacement.
+
+COMMUNICATION STYLE
+- Professional, concise, consultative, respectful, business-focused.
+- NOT pushy, over-enthusiastic, aggressive or promotional.
+
+RESPONSE RULES (strict — this is WhatsApp)
+- Keep most replies under 80 words. Short paragraphs.
+- Ask only ONE question at a time. Never interrogate.
+- Do not overwhelm with information.
+- Do not repeatedly ask for information already provided.
+
+GROUNDING RULES (critical)
+- Answer ONLY using the KNOWLEDGE BASE below. Never invent pricing, features, \
+figures, savings or services that are not documented.
+- If asked something not covered, say you'll have {settings.escalation_contact_name} \
+follow up, and offer a demo.
+- Do not guarantee revenue increases or promise patient growth. Discuss missed \
+calls, delayed responses and reception workload using only what the clinic shares.
+
+PRICING RULES
+- Before quoting, briefly understand clinic type and rough communication volume.
+- Never dodge pricing repeatedly. If the user directly asks more than once, answer \
+clearly using the pricing knowledge base.
+
+TOOL USE
+- When the user shares lead details (name, clinic, specialty, city, calls/day, \
+whether they have a receptionist), call capture_lead.
+- When the user raises an objection, call log_objection.
+- When the user wants a demo or asks for times, call get_demo_slots, present the \
+options, then call book_demo once they pick a time.
+- Escalate (escalate_to_human) for custom pricing, multi-branch, contracts, \
+proposals, deep technical integration, or an explicit request to talk to a person.
+
+Today is {{today}} ({settings.timezone}). Demo duration is \
+{settings.demo_duration_minutes} minutes.
+"""
+
+
+def _system_instructions(contact: Contact) -> str:
+    known = {
+        "doctor_name": contact.doctor_name,
+        "clinic_name": contact.clinic_name,
+        "specialty": contact.specialty,
+        "city": contact.city,
+        "calls_per_day": contact.calls_per_day,
+        "has_receptionist": contact.has_receptionist,
+        "interest_level": contact.interest_level.value,
+        "demo_requested": contact.demo_requested,
+    }
+    known_str = json.dumps({k: v for k, v in known.items() if v is not None}, default=str)
+    persona = PERSONA.replace("{today}", now_tz().strftime("%A, %d %B %Y"))
+    return (
+        f"{persona}\n\n"
+        f"WHAT YOU ALREADY KNOW ABOUT THIS LEAD (do not re-ask):\n{known_str}\n\n"
+        f"=== KNOWLEDGE BASE START ===\n{_KNOWLEDGE_BASE}\n=== KNOWLEDGE BASE END ==="
+    )
+
+
+# --------------------------------------------------------------------------
+# Tool schemas (Chat Completions format).
+# --------------------------------------------------------------------------
+TOOLS: List[Dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "capture_lead",
+            "description": "Save or update known details about the clinic/lead. Only pass fields the user actually provided.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doctor_name": {"type": "string"},
+                    "clinic_name": {"type": "string"},
+                    "specialty": {"type": "string", "description": "e.g. dentist, physiotherapist, general physician"},
+                    "city": {"type": "string"},
+                    "calls_per_day": {"type": "string", "description": "Number only, e.g. '40'. Omit if unknown."},
+                    "has_receptionist": {"type": "boolean"},
+                    "interest_level": {"type": "string", "enum": ["cold", "warm", "hot"]},
+                    "notes": {"type": "string", "description": "Any useful free-text context."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "log_objection",
+            "description": "Record an objection the user raised so the team can follow up.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objection_type": {
+                        "type": "string",
+                        "enum": [
+                            "too_expensive",
+                            "already_have_receptionist",
+                            "not_enough_calls",
+                            "whatsapp_only",
+                            "trust_concerns",
+                            "ai_concerns",
+                            "other",
+                        ],
+                    },
+                    "excerpt": {"type": "string", "description": "The user's own words."},
+                },
+                "required": ["objection_type"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_demo_slots",
+            "description": "Fetch available live-demo time slots to offer the user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max slots to return (default 4)."},
+                },
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_demo",
+            "description": "Book a demo at an exact ISO 8601 start time previously offered by get_demo_slots.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_iso": {"type": "string", "description": "ISO 8601 start time, e.g. 2026-06-21T11:00:00+05:30"},
+                    "attendee_email": {"type": "string", "description": "Optional email for the calendar invite."},
+                },
+                "required": ["start_iso"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "escalate_to_human",
+            "description": "Flag that a human (e.g. Rajesh) should take over (custom pricing, contracts, multi-branch, deep technical, or explicit request).",
+            "parameters": {
+                "type": "object",
+                "properties": {"reason": {"type": "string"}},
+                "required": ["reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+# --------------------------------------------------------------------------
+# Tool execution.
+# --------------------------------------------------------------------------
+async def _execute_tool(
+    db: AsyncSession, contact: Contact, name: str, args: Dict[str, Any]
+) -> Dict[str, Any]:
+    try:
+        if name == "capture_lead":
+            level = args.pop("interest_level", None)
+            # Groq may pass calls_per_day as string; convert to int or drop.
+            cpd = args.get("calls_per_day")
+            if cpd is not None:
+                try:
+                    args["calls_per_day"] = int(cpd)
+                except (ValueError, TypeError):
+                    args.pop("calls_per_day", None)
+            await update_lead(db, contact, **args)
+            if level:
+                await set_interest(db, contact, InterestLevel(level))
+            return {"ok": True, "saved": list(args.keys())}
+
+        if name == "log_objection":
+            otype = ObjectionType(args["objection_type"])
+            await log_objection(db, contact, otype, args.get("excerpt"))
+            return {"ok": True}
+
+        if name == "get_demo_slots":
+            limit = int(args.get("limit", 4))
+            slots = await calendar_service.get_available_slots(limit=limit)
+            return {
+                "ok": True,
+                "slots": [s.isoformat() for s in slots],
+                "human_readable": [s.strftime("%A %d %b, %I:%M %p") for s in slots],
+            }
+
+        if name == "book_demo":
+            start = datetime.fromisoformat(args["start_iso"])
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=tz())
+            return await _book_demo(db, contact, start, args.get("attendee_email"))
+
+        if name == "escalate_to_human":
+            contact.demo_requested = True
+            await update_lead(db, contact, notes=f"ESCALATION: {args.get('reason', '')}")
+            await set_interest(db, contact, InterestLevel.hot)
+            return {"ok": True, "escalated": True, "contact": settings.escalation_contact_name}
+
+        return {"ok": False, "error": f"unknown tool {name}"}
+    except Exception as exc:
+        log.exception("Tool %s failed: %s", name, exc)
+        return {"ok": False, "error": str(exc)}
+
+
+async def _book_demo(db, contact, start, attendee_email):
+    # 1) DB-level double-booking guard.
+    existing = await db.execute(
+        select(DemoBooking).where(
+            DemoBooking.start_time == start,
+            DemoBooking.status == BookingStatus.confirmed,
+        )
+    )
+    if existing.scalar_one_or_none():
+        return {"ok": False, "error": "slot_taken"}
+
+    # 2) Calendar-level guard.
+    if not await calendar_service.is_slot_free(start):
+        return {"ok": False, "error": "slot_taken"}
+
+    summary = f"SrintellX Demo — {contact.clinic_name or contact.doctor_name or contact.wa_phone}"
+    description = (
+        f"Lead: {contact.doctor_name or '-'} | Clinic: {contact.clinic_name or '-'} "
+        f"| Specialty: {contact.specialty or '-'} | City: {contact.city or '-'} "
+        f"| WhatsApp: {contact.wa_phone}"
+    )
+    event = await calendar_service.create_event(start, summary, description, attendee_email)
+
+    booking = DemoBooking(
+        contact_id=contact.id,
+        start_time=start,
+        end_time=start + timedelta(minutes=settings.demo_duration_minutes),
+        status=BookingStatus.confirmed,
+        google_event_id=event.get("event_id"),
+        meeting_link=event.get("meeting_link"),
+    )
+    db.add(booking)
+    contact.demo_requested = True
+    await set_interest(db, contact, InterestLevel.hot)
+    await db.flush()
+    return {
+        "ok": True,
+        "start": start.strftime("%A %d %b, %I:%M %p"),
+        "meeting_link": event.get("meeting_link"),
+    }
+
+
+# --------------------------------------------------------------------------
+# Agent loop (Chat Completions with tool calling).
+# --------------------------------------------------------------------------
+MAX_TOOL_ROUNDS = 5
+
+
+async def generate_reply(
+    db: AsyncSession,
+    contact: Contact,
+    history: List[Dict[str, str]],
+    user_text: str,
+) -> str:
+    """Run the agent and return the final assistant text for WhatsApp."""
+    if not settings.llm_api_key:
+        log.error("LLM_API_KEY not set.")
+        return (
+            "Thanks for your message! Our team will get back to you shortly. "
+            "Meanwhile, would a short live demo be helpful?"
+        )
+
+    client = _get_client()
+    system_msg = _system_instructions(contact)
+
+    # Build the messages array for chat completions.
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_msg}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_text})
+
+    for _round in range(MAX_TOOL_ROUNDS):
+        try:
+            response = await client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                temperature=settings.llm_temperature,
+                max_tokens=settings.llm_max_tokens,
+            )
+        except Exception as exc:
+            log.exception("LLM call failed: %s", exc)
+            return (
+                "Sorry, I had a brief technical hiccup. Could you resend that? "
+                "Or I can have our team reach out directly."
+            )
+
+        choice = response.choices[0]
+        message = choice.message
+
+        # If no tool calls, return the text reply.
+        if not message.tool_calls:
+            text = (message.content or "").strip()
+            return text or "Could you tell me a little more about your clinic so I can help?"
+
+        # Append the assistant message (with tool_calls) to the conversation.
+        # Build a clean dict — model_dump() includes fields Groq doesn't support.
+        assistant_msg: Dict[str, Any] = {"role": "assistant", "content": message.content or ""}
+        assistant_msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+            }
+            for tc in message.tool_calls
+        ]
+        messages.append(assistant_msg)
+
+        # Execute each tool call and append results.
+        for tool_call in message.tool_calls:
+            fn = tool_call.function
+            try:
+                args = json.loads(fn.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            result = await _execute_tool(db, contact, fn.name, args)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": json.dumps(result, default=str),
+            })
+
+    # Safety net if the model kept calling tools.
+    log.warning("Max tool rounds reached for contact %s", contact.id)
+    return "Based on what you've shared, a short live demo would be the easiest next step. Shall I check available slots?"
