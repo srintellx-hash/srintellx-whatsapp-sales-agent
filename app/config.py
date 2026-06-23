@@ -81,7 +81,16 @@ class Settings(BaseSettings):
     @field_validator("allowed_origins", mode="before")
     @classmethod
     def _split_origins(cls, v):
+        import json as _json
         if isinstance(v, str):
+            v = v.strip()
+            # Try JSON first: '["*"]' or '["http://localhost"]'
+            if v.startswith("["):
+                try:
+                    return _json.loads(v)
+                except _json.JSONDecodeError:
+                    pass
+            # Plain string: '*' or 'http://a.com,http://b.com'
             return [o.strip() for o in v.split(",") if o.strip()]
         return v
 
