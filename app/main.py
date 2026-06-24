@@ -23,13 +23,21 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s (env=%s)", settings.app_name, settings.environment)
-    # Auto-create tables if they don't exist (replaces fragile alembic CMD).
+    # Auto-create tables if they don't exist.
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(Base.metadata.create_all, checkfirst=True)
         log.info("Database tables verified/created.")
-    except Exception as exc:
-        log.exception("Failed to create tables: %s", exc)
+    except Exception:
+        # Likely orphaned enums from a failed prior deploy. Drop all and retry.
+        log.warning("Table creation failed; dropping schema and retrying.")
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.drop_all)
+                await conn.run_sync(Base.metadata.create_all)
+            log.info("Database tables recreated from scratch.")
+        except Exception as exc:
+            log.exception("Database setup failed entirely: %s", exc)
     yield
     log.info("Shutting down %s", settings.app_name)
 
