@@ -76,23 +76,11 @@ class Settings(BaseSettings):
 
     # ----- Security -----
     rate_limit_per_minute: int = Field(default=20)   # inbound msgs per sender / minute
-    allowed_origins: List[str] = Field(default_factory=lambda: ["*"])
+    allowed_origins: str = Field(default="*")  # comma-separated or just "*"
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def _split_origins(cls, v):
-        import json as _json
-        if isinstance(v, str):
-            v = v.strip()
-            # Try JSON first: '["*"]' or '["http://localhost"]'
-            if v.startswith("["):
-                try:
-                    return _json.loads(v)
-                except _json.JSONDecodeError:
-                    pass
-            # Plain string: '*' or 'http://a.com,http://b.com'
-            return [o.strip() for o in v.split(",") if o.strip()]
-        return v
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
 
     @property
     def is_production(self) -> bool:
