@@ -4,27 +4,22 @@ SrintellX is an AI reception system built for Indian clinics. It helps clinics
 automate patient calls and WhatsApp inquiries so no patient inquiry goes
 unanswered.
 
-## What SrintellX does
-- Answers patient calls and WhatsApp messages 24/7
-- Handles appointment inquiries and booking communication
-- Responds to missed calls
-- Handles routine patient inquiries
-- Provides after-hours availability
-- Syncs confirmed bookings to Google Calendar
-- Sends WhatsApp confirmations and follow-ups
+## Two Products
+
+### AI Voice Receptionist
+Answers patient phone calls 24/7 — handles appointment booking, missed-call
+recovery, after-hours availability, and syncs everything to Google Calendar.
+
+### AI WhatsApp Assistant
+Handles patient WhatsApp inquiries instantly — answers questions, books
+appointments, sends confirmations, follow-up reminders, and no-show recovery.
+
+Clinics can choose either one or both together at a discounted combo rate.
 
 ## Positioning
 SrintellX works like a clinic's best front desk and supports existing reception
 staff — it is NOT a replacement for human receptionists. It helps during busy
 periods, after hours, lunch breaks, and when multiple calls come in at once.
-
-## Documented services (do not invent others)
-- AI Voice Receptionist
-- AI WhatsApp Assistant
-- Appointment Handling
-- Missed Call Response
-- Patient Inquiry Handling
-- After-Hours Availability
 
 ## Company facts
 - Built for clinics, by an Indian team
@@ -32,3 +27,4 @@ periods, after hours, lunch breaks, and when multiple calls come in at once.
 - Instagram: @srintellx
 - Setup handled by the SrintellX team — no technical knowledge needed
 - Typical go-live: within 24 hours of sign-up
+- Free 2-week trial on all plans, no credit card, cancel anytime
