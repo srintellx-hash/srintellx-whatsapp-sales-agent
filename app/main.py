@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +71,12 @@ async def root():
 async def health(db: AsyncSession = Depends(get_db)):
     await db.execute(select(1))
     return {"status": "healthy", "database": "connected"}
+
+
+@app.get("/privacy", response_class=HTMLResponse, tags=["legal"])
+async def privacy():
+    html_path = Path(__file__).resolve().parent.parent / "static" / "privacy.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
 
 # --------------------------------------------------------------------------
