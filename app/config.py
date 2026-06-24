@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     @field_validator("database_url")
     @classmethod
     def _force_async_driver(cls, v: str) -> str:
+        # SQLite (local dev) — leave as-is.
+        if v.startswith("sqlite"):
+            return v
         # Railway/Heroku style URLs use the sync driver name.
         if v.startswith("postgres://"):
             v = v.replace("postgres://", "postgresql+asyncpg://", 1)

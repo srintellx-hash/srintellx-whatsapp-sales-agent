@@ -9,8 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database import get_db
+from app.database import Base, engine, get_db
 from app.models import Contact, DemoBooking, Objection
+from app import models  # noqa: F401  ensure all models are registered
 from app.schemas import BookingOut, ContactOut
 from app.utils import configure_logging, get_logger
 from app.webhook import router as webhook_router
@@ -22,6 +23,13 @@ log = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting %s (env=%s)", settings.app_name, settings.environment)
+    # Auto-create tables if they don't exist (replaces fragile alembic CMD).
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        log.info("Database tables verified/created.")
+    except Exception as exc:
+        log.exception("Failed to create tables: %s", exc)
     yield
     log.info("Shutting down %s", settings.app_name)
 

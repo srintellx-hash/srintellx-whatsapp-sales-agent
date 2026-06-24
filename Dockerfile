@@ -20,6 +20,5 @@ COPY . .
 ENV PORT=8000
 EXPOSE 8000
 
-# Run migrations then start the server.
-CMD alembic upgrade head && \
-    uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
+# Start the server directly — tables are auto-created on startup.
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT}
