@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import Base, engine, get_db
-from app.models import Contact, DemoBooking, Objection
+from app.models import Contact, DemoBooking, InterestLevel, Objection
 from app import models  # noqa: F401  ensure all models are registered
 from app.schemas import BookingOut, ContactOut
 from app.utils import configure_logging, get_logger
@@ -105,3 +105,36 @@ async def stats(db: AsyncSession = Depends(get_db)):
     bookings = await db.scalar(select(func.count()).select_from(DemoBooking))
     objections = await db.scalar(select(func.count()).select_from(Objection))
     return {"leads": leads, "bookings": bookings, "objections": objections}
+
+
+@app.delete("/admin/reset/{phone}", tags=["admin"])
+async def reset_contact(phone: str, db: AsyncSession = Depends(get_db)):
+    """Clear all conversations, bookings, and objections for a phone number.
+    
+    Use for testing. The contact record itself is kept but lead fields are reset.
+    Example: DELETE /admin/reset/919876543210
+    """
+    from app.models import Conversation as Conv, Objection as Obj, DemoBooking as Bk
+    result = await db.execute(select(Contact).where(Contact.wa_phone == phone))
+    contact = result.scalar_one_or_none()
+    if not contact:
+        return {"ok": False, "error": "contact not found"}
+    
+    await db.execute(Conv.__table__.delete().where(Conv.contact_id == contact.id))
+    await db.execute(Obj.__table__.delete().where(Obj.contact_id == contact.id))
+    await db.execute(Bk.__table__.delete().where(Bk.contact_id == contact.id))
+    
+    # Reset lead fields
+    contact.interest_level = InterestLevel.cold
+    contact.demo_requested = False
+    contact.doctor_name = None
+    contact.clinic_name = None
+    contact.specialty = None
+    contact.city = None
+    contact.calls_per_day = None
+    contact.has_receptionist = None
+    contact.notes = None
+    
+    await db.commit()
+    log.info("Reset all data for contact %s (%s)", contact.id, phone)
+    return {"ok": True, "contact_id": contact.id, "message": f"Cleared all history for {phone}"}

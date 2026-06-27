@@ -98,11 +98,13 @@ CONVERSATION FLOW (follow this natural progression)
 5. When pricing comes up, follow the consultative flow in the pricing knowledge base.
 6. Suggest a demo only when it naturally fits.
 
-DEMO BOOKING RULES
-- Do NOT offer demo slots proactively. Wait until the user shows clear interest.
-- Good triggers: "show me", "can I see", "book a demo", "what times", asked about pricing and seems interested.
-- Bad triggers: user just asking general questions or learning about the product.
-- When you DO offer a demo, say something like: "Would you like to see this in a quick 20-minute demo?" FIRST. Only call get_demo_slots AFTER they say yes.
+DEMO BOOKING RULES (CRITICAL — read carefully)
+- NEVER call get_demo_slots or book_demo unless the user EXPLICITLY says words like "book a demo", "schedule a demo", "show me a demo", "what times are available".
+- Saying "Hi" is NOT a demo request. Asking about pricing is NOT a demo request. Asking how it works is NOT a demo request.
+- When the user seems interested, FIRST ask: "Would you like to see this in a quick 20-minute demo?" and WAIT for them to say yes.
+- Only call get_demo_slots AFTER they confirm they want a demo.
+- Only call book_demo AFTER they pick a specific time slot you offered.
+- If in doubt, DO NOT book. Have a conversation first.
 
 GROUNDING RULES
 - Answer ONLY from the KNOWLEDGE BASE below. Never invent pricing, features or figures.
@@ -342,6 +344,30 @@ async def _book_demo(db, contact, start, attendee_email):
 
 
 # --------------------------------------------------------------------------
+# Welcome message for new conversations.
+# --------------------------------------------------------------------------
+WELCOME_MESSAGE = """Welcome to SrintellX! 👋
+
+We help clinics automate patient calls and WhatsApp inquiries — so you never miss a patient.
+
+I can help you with:
+• How our AI Voice & WhatsApp agents work
+• Pricing for your clinic size
+• Understanding impact on missed calls
+• Scheduling a live demo
+
+What would you like to know?"""
+
+_GREETING_WORDS = {"hi", "hello", "hey", "hii", "hiii", "helo", "hai", "namaste", "good morning", "good afternoon", "good evening", "gm", "morning"}
+
+
+def _is_simple_greeting(text: str) -> bool:
+    """Check if the message is just a greeting with no substance."""
+    cleaned = text.strip().lower().rstrip("!.,? ")
+    return cleaned in _GREETING_WORDS
+
+
+# --------------------------------------------------------------------------
 # Agent loop (Chat Completions with tool calling).
 # --------------------------------------------------------------------------
 MAX_TOOL_ROUNDS = 5
@@ -354,15 +380,26 @@ async def generate_reply(
     user_text: str,
 ) -> str:
     """Run the agent and return the final assistant text for WhatsApp."""
+
+    # New conversation + simple greeting → send welcome message directly (no AI call needed).
+    if not history and _is_simple_greeting(user_text):
+        return WELCOME_MESSAGE
+
     if not settings.llm_api_key:
         log.error("LLM_API_KEY not set.")
-        return (
-            "Thanks for your message! Our team will get back to you shortly. "
-            "Meanwhile, would a short live demo be helpful?"
-        )
+        return WELCOME_MESSAGE
 
     client = _get_client()
     system_msg = _system_instructions(contact)
+
+    # If this is a fresh conversation, tell the model to welcome the user first.
+    if not history:
+        system_msg += (
+            "\n\nIMPORTANT: This is the START of a new conversation. "
+            "The user just reached out for the first time (or after a long gap). "
+            "Start with a brief warm welcome to SrintellX, then address what they asked. "
+            "Do NOT book demos or call tools on the very first message."
+        )
 
     # Build the messages array for chat completions.
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_msg}]

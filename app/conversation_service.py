@@ -1,18 +1,21 @@
 """Conversation memory: persist messages and build prompt history."""
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import List
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Contact, Conversation, MessageRole
-from app.utils import get_logger
+from app.utils import get_logger, now_tz
 
 log = get_logger(__name__)
 
 # How many past turns to feed back into the model.
 HISTORY_WINDOW = 20
+# If the last message is older than this, treat it as a new conversation.
+CONVERSATION_TIMEOUT = timedelta(hours=2)
 
 
 async def get_or_create_contact(
@@ -57,7 +60,11 @@ async def save_message(
 
 
 async def get_recent_history(db: AsyncSession, contact: Contact) -> List[dict]:
-    """Return recent turns as OpenAI Responses-API input items, oldest first."""
+    """Return recent turns for the LLM, oldest first.
+
+    If the most recent message is older than CONVERSATION_TIMEOUT, return an
+    empty list so the model treats this as a fresh conversation.
+    """
     result = await db.execute(
         select(Conversation)
         .where(Conversation.contact_id == contact.id)
@@ -65,10 +72,20 @@ async def get_recent_history(db: AsyncSession, contact: Contact) -> List[dict]:
         .limit(HISTORY_WINDOW)
     )
     rows = list(result.scalars().all())
+    if not rows:
+        return []
+
+    # Check if the conversation is stale.
+    most_recent = rows[0]
+    if most_recent.created_at and (now_tz() - most_recent.created_at.replace(
+        tzinfo=now_tz().tzinfo
+    ) if most_recent.created_at.tzinfo is None else now_tz() - most_recent.created_at) > CONVERSATION_TIMEOUT:
+        log.info("Conversation timeout for contact %s — starting fresh.", contact.id)
+        return []
+
     rows.reverse()
     items: List[dict] = []
     for r in rows:
-        # System rows are internal notes; don't replay them as user/assistant.
         if r.role == MessageRole.system:
             continue
         items.append({"role": r.role.value, "content": r.content})
