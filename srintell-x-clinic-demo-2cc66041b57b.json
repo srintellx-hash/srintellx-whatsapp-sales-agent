@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "srintell-x-clinic-demo",
+  "private_key_id": "2cc66041b57bdf7f48bc826f6ea197b665a29c49",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC2xfaK1yBp9eKD\nnDniJ6LvqFfLGlsP7kmnqbGTOmrpWNrO25uDfdu+HJCeJgurpr6QsQb2fwwpoyDA\nxcwBj7+mfJOXx5VosvVWC4M5mLqCv4J+AoE3G6ypbfvrUgxWwM+JdCZ6yWkvGXy2\nTWelO0O0q8wIYwwddO2/HmmhwRiCB6mdMGdgYeDmXcMhH19Xt1AV0beGQmHyz3VO\nbbk0W6B3ZtiKmjJYpXDJk4pex9QGtCd8Jvql0+DixfVQrzRkGhbLPCMGd+JSlheE\nnQMNZQL3Ay22RbyNiJaF77lS5xsk9cNH6LcXwtzVRyiKgQYNlygkD0YSXebglvS7\nK3GA+5PDAgMBAAECggEAFUgDQb2fExIOarJH6nAgtdSn9Z30fhbfRvaTFr2lvCox\n6VsYW5z4d0WJMI46gU/m1B8gsevaGoZZe8isIn8T2sqaPtZ+LD+GIcYxDzBG1eQp\nnrV489XflVIZPphXl8msgJM1yx86MEHrS6jDSYcXMOloq43+LPcz8DMWK+o5XyOw\neeiSS0d79+LSU6w0x1wDCDFscfGi5PqDazAp5MAi9QYx1FKl0POTdhIR0iTZ5wfS\neUPpXvVdSc4FRKtcHx3lW/hQAB4X+fjGCEbnMvx755hqn/alvBDBUvXGQYgLKi3L\nASzzTjxzfDXdImKghCWAQBOqJ7aIbza/oku+FFAD4QKBgQDlFkkEUVNZmlXl/5PD\ndJX+lEedIEMbALoN07auJ6mct+z0nUDU0eSE1sn9P5+IjG84MejrnO3wn0Z9HFFV\n2wNSuZN3MennBx6Me2MniVNzi814FsOon0Hxrb+IYum8o3Cp2YKhrNdRcjMXQkxj\ntEV5EZVJWFJpw5ymIabgh10OoQKBgQDMPs6wUcwFsw2FS/RjCxk7OSN4IAY3QKDf\naxK/8DH7hfVaLwJTYV4rj9YNM4J+MfRS9s55ISD5lCpIahyuX1UGwYSTDq9KrycB\nUcJZR7+g090P+N8CuYFP5LnxkOYUh85XAoVP3nTtf6ZQgwpLT3Mj8KKKAevFBsYi\nNsul0si74wKBgFYdtn0FBUwdlETNeoJzBR+aJgGO6yrvbwFboMR+7GeZTF337zMR\nY9H73BpzHEl8YSLCwEgxydA2T40gZALePbWPRTv9a2wJZRZyG6f1G4XH/Ak0pYBx\nvZxYMDPY2vyqg+OVfGHCU36uaz5HEeg5EBSe43ua1AAmJHDfHZgxym2BAoGAAQdH\n7ydaSaUPKl6pil4h8GRnQ1GV9m1C4h0d6Q2Ckuunwp59+oGBAeMlhsd9nrkNq+VG\nQOHj0p3mYJr4LgCY4wHScxMd2thq79zDh8OOuXaXpF7ycIcSmZ5jOU4remr8pP+E\nQFS0bgW4hqtCQALUZ5fsmZlM4J8aHE3+VIVtMVUCgYEAtTek+ZAfvuf/rY1KyHjY\ndQWzkxLJkqxx82VbLOdL3CLm5M0M2cOsIYnAe7CoXibyw4dnGfuuW+e4x4+lGOAc\n8hwLdhkuK/ASD8DB3l79PB6WwZWBjOHkmnjpLDbDlIVrSkKAUrkOqyMYPSN6xgor\nYj4923qUsi/6hBdQIiKZ+n8=\n-----END PRIVATE KEY-----\n",
+  "client_email": "srintellx-calendar@srintell-x-clinic-demo.iam.gserviceaccount.com",
+  "client_id": "109582742225973744519",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/srintellx-calendar%40srintell-x-clinic-demo.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

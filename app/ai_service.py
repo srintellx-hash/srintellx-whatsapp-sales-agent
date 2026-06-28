@@ -183,7 +183,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_demo_slots",
-            "description": "Fetch available live-demo time slots to offer the user.",
+            "description": "Fetch available live-demo time slots. Returns numbered slots. Show the display text to the user.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -197,14 +197,13 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "book_demo",
-            "description": "Book a demo at an exact ISO 8601 start time previously offered by get_demo_slots.",
+            "description": "Book a demo by slot number from get_demo_slots results. Call this after the user picks a slot.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "start_iso": {"type": "string", "description": "ISO 8601 start time, e.g. 2026-06-21T11:00:00+05:30"},
-                    "attendee_email": {"type": "string", "description": "Optional email for the calendar invite."},
+                    "slot_number": {"type": "integer", "description": "The slot number the user picked (1, 2, 3, etc.)"},
                 },
-                "required": ["start_iso"],
+                "required": ["slot_number"],
                 "additionalProperties": False,
             },
         },
@@ -223,6 +222,12 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
 ]
+
+
+# --------------------------------------------------------------------------
+# Slot cache: stores last offered demo slots per contact for easy booking.
+# --------------------------------------------------------------------------
+_slot_cache: Dict[int, List[datetime]] = {}
 
 
 # --------------------------------------------------------------------------
@@ -260,20 +265,26 @@ async def _execute_tool(
         if name == "get_demo_slots":
             limit = int(args.get("limit", 4))
             slots = await calendar_service.get_available_slots(limit=limit)
+            # Store in cache for easy booking by number.
+            _slot_cache[contact.id] = slots
             return {
                 "ok": True,
                 "available_slots": [
-                    {"display": s.strftime("%A %d %b, %I:%M %p"), "book_with": s.isoformat()}
-                    for s in slots
+                    {"slot_number": i + 1, "display": s.strftime("%A %d %b, %I:%M %p"), "iso": s.isoformat()}
+                    for i, s in enumerate(slots)
                 ],
-                "instruction": "Show the 'display' text to the user. Use 'book_with' value when calling book_demo.",
+                "instruction": "Show ONLY the slot_number and display text. User picks a number, then call book_demo with that slot_number.",
             }
 
         if name == "book_demo":
-            start = datetime.fromisoformat(args["start_iso"])
+            slot_num = int(args.get("slot_number", 0))
+            cached = _slot_cache.get(contact.id, [])
+            if not cached or slot_num < 1 or slot_num > len(cached):
+                return {"ok": False, "error": "Invalid slot number. Please call get_demo_slots first."}
+            start = cached[slot_num - 1]
             if start.tzinfo is None:
                 start = start.replace(tzinfo=tz())
-            return await _book_demo(db, contact, start, args.get("attendee_email"))
+            return await _book_demo(db, contact, start, None)
 
         if name == "escalate_to_human":
             contact.demo_requested = True
