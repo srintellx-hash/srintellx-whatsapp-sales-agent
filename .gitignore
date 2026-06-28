@@ -9,3 +9,5 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+*.json
+!railway.json
