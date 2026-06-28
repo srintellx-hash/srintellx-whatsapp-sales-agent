@@ -312,24 +312,24 @@ async def _book_demo(db, contact, start, attendee_email):
 # --------------------------------------------------------------------------
 # Welcome message for new conversations.
 # --------------------------------------------------------------------------
-WELCOME_MESSAGE = """Welcome to SrintellX! 👋
+WELCOME_MESSAGE = """Hi there! Welcome to SrintellX 👋
 
-We help clinics automate patient calls and WhatsApp inquiries — so you never miss a patient.
+We help clinics never miss a patient enquiry with AI-powered Voice & WhatsApp assistants — even during busy consultations and after clinic hours.
 
-I can help you with:
-• How our AI Voice & WhatsApp agents work
-• Pricing for your clinic size
-• Understanding impact on missed calls
-• Scheduling a live demo
+Quick question...
+Do you ever miss patient enquiries because your team is busy or the clinic is closed?"""
 
-What would you like to know?"""
-
-_GREETING_WORDS = {"hi", "hello", "hey", "hii", "hiii", "helo", "hai", "namaste", "good morning", "good afternoon", "good evening", "gm", "morning"}
+_GREETING_WORDS = {
+    "hi", "hello", "hey", "hii", "hiii", "helo", "hai",
+    "namaste", "good morning", "good afternoon", "good evening",
+    "gm", "morning", "hi there", "hello there", "hey there",
+    "hola", "howdy", "sup", "yo",
+}
 
 
 def _is_simple_greeting(text: str) -> bool:
     """Check if the message is just a greeting with no substance."""
-    cleaned = text.strip().lower().rstrip("!.,? ")
+    cleaned = text.strip().lower().rstrip("!.,?~ ")
     return cleaned in _GREETING_WORDS
 
 
