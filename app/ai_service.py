@@ -232,11 +232,17 @@ async def _execute_tool(
                     args.pop("calls_per_day", None)
             await update_lead(db, contact, **args)
             if level:
-                await set_interest(db, contact, InterestLevel(level))
+                try:
+                    await set_interest(db, contact, InterestLevel(level))
+                except (ValueError, KeyError):
+                    pass
             return {"ok": True, "saved": list(args.keys())}
 
         if name == "log_objection":
-            otype = ObjectionType(args["objection_type"])
+            try:
+                otype = ObjectionType(args["objection_type"])
+            except (ValueError, KeyError):
+                otype = ObjectionType.other
             await log_objection(db, contact, otype, args.get("excerpt"))
             return {"ok": True}
 
