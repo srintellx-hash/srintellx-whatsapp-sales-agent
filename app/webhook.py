@@ -117,6 +117,11 @@ async def process_message(msg: InboundMessage) -> None:
                 return
 
             contact = await get_or_create_contact(db, msg.sender, msg.profile_name)
+
+            # Check if this is a new conversation BEFORE saving the message.
+            history_before = await get_recent_history(db, contact)
+            is_new_conversation = len(history_before) == 0
+
             await save_message(
                 db, contact, MessageRole.user, msg.text, wa_message_id=msg.wa_message_id
             )
@@ -127,8 +132,9 @@ async def process_message(msg: InboundMessage) -> None:
                 await log_objection(db, contact, otype, excerpt=msg.text[:500])
             await set_interest(db, contact, detect_interest(msg.text))
 
-            history = await get_recent_history(db, contact)
-            reply = await generate_reply(db, contact, history, msg.text)
+            reply = await generate_reply(
+                db, contact, history_before, msg.text, is_new_conversation
+            )
 
             await save_message(db, contact, MessageRole.assistant, reply)
             await db.commit()

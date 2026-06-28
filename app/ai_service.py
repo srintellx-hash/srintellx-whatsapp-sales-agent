@@ -350,11 +350,12 @@ async def generate_reply(
     contact: Contact,
     history: List[Dict[str, str]],
     user_text: str,
+    is_new_conversation: bool = False,
 ) -> str:
     """Run the agent and return the final assistant text for WhatsApp."""
 
-    # New conversation + simple greeting → send welcome message directly (no AI call needed).
-    if not history and _is_simple_greeting(user_text):
+    # New conversation + simple greeting → send welcome message directly.
+    if is_new_conversation and _is_simple_greeting(user_text):
         return WELCOME_MESSAGE
 
     if not settings.llm_api_key:
@@ -365,7 +366,7 @@ async def generate_reply(
     system_msg = _system_instructions(contact)
 
     # If this is a fresh conversation, tell the model to welcome the user first.
-    if not history:
+    if is_new_conversation:
         system_msg += (
             "\n\nIMPORTANT: This is the START of a new conversation. "
             "The user just reached out for the first time (or after a long gap). "
