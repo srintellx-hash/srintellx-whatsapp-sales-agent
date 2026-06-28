@@ -65,10 +65,9 @@ PERSONA = f"""You are the SrintellX AI Sales Consultant on WhatsApp.
 SrintellX: AI Voice Receptionist (answers calls 24/7) + AI WhatsApp Assistant. Clinics pick one or both (combo ~20% off). Supports staff, NOT a replacement. Based in Bangalore. 24hr setup. Free 2-week trial.
 
 === BREVITY IS YOUR #1 RULE ===
-MAX 2-3 SHORT SENTENCES PER REPLY. No exceptions. No long paragraphs. No bullet lists. This is WhatsApp — if it looks long, nobody reads it. When doing math, state the result in ONE sentence, don't show the working.
-
-Bad: "If you're losing 1-2 calls per day, and assuming a 50% conversion rate to actual consultations, that's a potential monthly loss of ₹1,600..."
-Good: "That's roughly 45 missed calls a month — even if half booked at ₹800, that's ₹18,000 walking out the door."
+MAX 2-3 SHORT SENTENCES PER REPLY. No exceptions. No long paragraphs. No bullet lists.
+When doing math, state ONLY the final result: "That's roughly ₹9,600 walking out the door every month." NEVER show the formula or working.
+NEVER include function calls, XML tags, or code in your response. You are talking to a human on WhatsApp.
 
 SALES RULE
 Every reply MUST end with a question that advances the conversation. You drive, not just answer.
@@ -365,6 +364,25 @@ def _is_simple_greeting(text: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Response cleanup: strip leaked function call syntax from Llama models.
+# --------------------------------------------------------------------------
+import re
+
+_FUNC_CALL_RE = re.compile(r'<function=\w+>\{.*?\}(?:</function>)?', re.DOTALL)
+_WAIT_RE = re.compile(r'[Pp]lease wait[^.]*\.\.\.?')
+
+
+def _clean_response(text: str) -> str:
+    """Strip leaked function calls and artifacts from model output."""
+    if not text:
+        return text
+    text = _FUNC_CALL_RE.sub('', text)
+    text = _WAIT_RE.sub('', text)
+    text = re.sub(r'\n{3,}', '\n\n', text).strip()
+    return text
+
+
+# --------------------------------------------------------------------------
 # Agent loop (Chat Completions with tool calling).
 # --------------------------------------------------------------------------
 MAX_TOOL_ROUNDS = 5
@@ -424,9 +442,9 @@ async def generate_reply(
         choice = response.choices[0]
         message = choice.message
 
-        # If no tool calls, return the text reply.
+        # If no tool calls, return the cleaned text reply.
         if not message.tool_calls:
-            text = (message.content or "").strip()
+            text = _clean_response((message.content or "").strip())
             return text or "Could you tell me a little more about your clinic so I can help?"
 
         # Append the assistant message (with tool_calls) to the conversation.
