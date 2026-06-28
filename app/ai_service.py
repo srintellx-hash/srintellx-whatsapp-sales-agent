@@ -100,7 +100,15 @@ NEVER mix up plan features. Each tier has specific features — check the pricin
 PRICING: Follow pricing KB flow. Frame loss before price. If asked twice, share directly.
 GROUNDING: Knowledge base only. Never invent figures.
 ESCALATE to {settings.escalation_contact_name}: custom pricing, multi-branch, contracts.
-TOOLS: capture_lead, log_objection, get_demo_slots (only when asked), book_demo (after time picked), escalate_to_human.
+
+DEMO BOOKING (strict process — follow exactly):
+1. User wants demo → call get_demo_slots. You'll get numbered slots back.
+2. Show them as a numbered list: "1. Saturday 28 Jun, 8:30 PM" etc.
+3. Ask "Which slot works for you?"
+4. User says a number → call book_demo with that slot_number.
+NEVER skip steps. NEVER book without showing numbered slots first. NEVER invent slot times.
+
+TOOLS: capture_lead, log_objection, get_demo_slots, book_demo (slot_number only), escalate_to_human.
 
 Today: {{today}} ({settings.timezone}). Demo: {settings.demo_duration_minutes} mins.
 """
@@ -368,18 +376,32 @@ def _is_simple_greeting(text: str) -> bool:
 # --------------------------------------------------------------------------
 import re
 
-_FUNC_CALL_RE = re.compile(r'<function=\w+>\{.*?\}(?:</function>)?', re.DOTALL)
-_WAIT_RE = re.compile(r'[Pp]lease wait[^.]*\.\.\.?')
+_CLEANUP_PATTERNS = [
+    # <function=name>{...}</function> and unclosed variants
+    re.compile(r'</?function[^>]*>(\{.*?\})?', re.DOTALL),
+    # "You can also use the following function..." type text
+    re.compile(r'You can (?:also )?use the following function[^.]*\.?', re.IGNORECASE),
+    # "Please wait for a moment..."
+    re.compile(r'[Pp]lease wait[^.]*\.\.\.?'),
+    # "Let me check..." filler when tool call leaked
+    re.compile(r'Let me (?:check|fetch|get)[^.]*\.\.\.?'),
+    # Any remaining {..."function"...} JSON blobs
+    re.compile(r'\{[^}]*"function"[^}]*\}'),
+    # <tool_call> or similar tags
+    re.compile(r'</?tool[^>]*>'),
+]
 
 
 def _clean_response(text: str) -> str:
     """Strip leaked function calls and artifacts from model output."""
     if not text:
         return text
-    text = _FUNC_CALL_RE.sub('', text)
-    text = _WAIT_RE.sub('', text)
-    text = re.sub(r'\n{3,}', '\n\n', text).strip()
-    return text
+    for pattern in _CLEANUP_PATTERNS:
+        text = pattern.sub('', text)
+    # Clean up leftover whitespace.
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'  +', ' ', text)
+    return text.strip()
 
 
 # --------------------------------------------------------------------------

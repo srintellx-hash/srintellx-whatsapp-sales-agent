@@ -138,3 +138,22 @@ async def reset_contact(phone: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
     log.info("Reset all data for contact %s (%s)", contact.id, phone)
     return {"ok": True, "contact_id": contact.id, "message": f"Cleared all history for {phone}"}
+
+
+@app.get("/admin/calendar-test", tags=["admin"])
+async def calendar_test():
+    """Diagnostic: check Google Calendar connectivity and available slots."""
+    from app.calendar_service import calendar_service
+    result = {
+        "calendar_enabled": calendar_service.enabled,
+        "calendar_id": settings.google_calendar_id,
+        "service_account_configured": bool(settings.google_service_account_json.strip()),
+        "service_account_file_configured": bool(settings.google_service_account_file.strip()),
+    }
+    try:
+        slots = await calendar_service.get_available_slots(limit=4)
+        result["available_slots"] = [s.strftime("%A %d %b, %I:%M %p") for s in slots]
+        result["slots_count"] = len(slots)
+    except Exception as exc:
+        result["slots_error"] = str(exc)
+    return result
