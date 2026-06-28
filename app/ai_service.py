@@ -84,10 +84,19 @@ FLOW
 IMPORTANT: Do NOT calculate losses or mention money until you have ALL THREE: clinic type, daily volume, and missed count. Until then, just ask the next discovery question.
 
 STEERING
-- "how can you help?" → One sentence about SrintellX, then "What type of clinic do you run?"
-- "my staff handles it" → "Great. What happens when 3 calls come in at once or after hours?"
+- "how can you help?" → One sentence, then "What type of clinic do you run?"
+- "my staff handles it" / "no missed calls" → "Great. What about WhatsApp messages — do patients message you after hours or when your team is busy with walk-ins?"
 - "sounds expensive" → "How many calls per day? Let me show you the numbers."
 - "AI sounds robotic" → "Fair point. Would a quick live demo help you judge?"
+- If user says calls are handled well, pivot to: WhatsApp gaps, after-hours coverage, simultaneous calls, receptionist leave/absence, no-shows.
+- NEVER calculate losses using numbers the user didn't give you. Only use THEIR numbers.
+
+PLAN ACCURACY (CRITICAL)
+NEVER mix up plan features. Each tier has specific features — check the pricing KB before recommending. Key rules:
+- Starter: basic features only (call answering, booking, calendar sync). NO confirmations, NO follow-ups, NO analytics.
+- Growth: adds confirmations, regional languages, priority support. NO follow-ups, NO analytics.
+- Pro: adds follow-ups, reminders, no-show recovery, analytics.
+- If a feature is in Pro, do NOT say it's in Starter or Growth. Get this wrong and we lose trust.
 
 PRICING: Follow pricing KB flow. Frame loss before price. If asked twice, share directly.
 GROUNDING: Knowledge base only. Never invent figures.
@@ -253,8 +262,11 @@ async def _execute_tool(
             slots = await calendar_service.get_available_slots(limit=limit)
             return {
                 "ok": True,
-                "slots": [s.isoformat() for s in slots],
-                "human_readable": [s.strftime("%A %d %b, %I:%M %p") for s in slots],
+                "available_slots": [
+                    {"display": s.strftime("%A %d %b, %I:%M %p"), "book_with": s.isoformat()}
+                    for s in slots
+                ],
+                "instruction": "Show the 'display' text to the user. Use 'book_with' value when calling book_demo.",
             }
 
         if name == "book_demo":
