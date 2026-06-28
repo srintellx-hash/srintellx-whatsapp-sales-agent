@@ -392,7 +392,21 @@ _CLEANUP_PATTERNS = [
 ]
 
 
-def _clean_response(text: str) -> str:
+def _parse_leaked_calls(text: str) -> List[tuple]:
+    """Extract function calls leaked as text by Llama models.
+    
+    Returns list of (function_name, args_dict) tuples.
+    """
+    results = []
+    # Match <function=name>{...}</function> or <function=name>{...}
+    for match in re.finditer(r'<function=(\w+)>\s*(\{[^}]*\})', text):
+        name = match.group(1)
+        try:
+            args = json.loads(match.group(2))
+        except json.JSONDecodeError:
+            args = {}
+        results.append((name, args))
+    return results
     """Strip leaked function calls and artifacts from model output."""
     if not text:
         return text
@@ -464,10 +478,27 @@ async def generate_reply(
         choice = response.choices[0]
         message = choice.message
 
-        # If no tool calls, return the cleaned text reply.
+        # If no tool calls, check for leaked function calls in the text.
         if not message.tool_calls:
-            text = _clean_response((message.content or "").strip())
-            return text or "Could you tell me a little more about your clinic so I can help?"
+            raw_text = (message.content or "").strip()
+            
+            # Parse and execute any leaked function calls.
+            leaked = _parse_leaked_calls(raw_text)
+            extra_info = ""
+            for func_name, func_args in leaked:
+                log.info("Executing leaked tool call: %s(%s)", func_name, func_args)
+                result = await _execute_tool(db, contact, func_name, func_args)
+                if result.get("ok"):
+                    if func_name == "book_demo" and result.get("start"):
+                        extra_info = f"\n\nYour demo is booked for {result['start']}. See you then!"
+                    elif func_name == "get_demo_slots" and result.get("available_slots"):
+                        slots_text = "\n".join(
+                            f"{s['slot_number']}. {s['display']}" for s in result["available_slots"]
+                        )
+                        extra_info = f"\n\nHere are the available slots:\n{slots_text}\n\nWhich one works for you?"
+            
+            text = _clean_response(raw_text) + extra_info
+            return text.strip() or "Could you tell me a little more about your clinic so I can help?"
 
         # Append the assistant message (with tool_calls) to the conversation.
         # Build a clean dict — model_dump() includes fields Groq doesn't support.
