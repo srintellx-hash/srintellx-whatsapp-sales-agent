@@ -407,6 +407,9 @@ def _parse_leaked_calls(text: str) -> List[tuple]:
             args = {}
         results.append((name, args))
     return results
+
+
+def _clean_response(text: str) -> str:
     """Strip leaked function calls and artifacts from model output."""
     if not text:
         return text
