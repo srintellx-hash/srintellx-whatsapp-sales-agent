@@ -153,17 +153,10 @@ class CalendarService:
             "start": {"dateTime": start.isoformat(), "timeZone": settings.timezone},
             "end": {"dateTime": end.isoformat(), "timeZone": settings.timezone},
         }
-        attendees = []
-        if settings.demo_organizer_email:
-            attendees.append({"email": settings.demo_organizer_email})
-        if attendee_email:
-            attendees.append({"email": attendee_email})
-        if attendees:
-            event_body["attendees"] = attendees
 
         created = (
             self._service.events()
-            .insert(calendarId=settings.google_calendar_id, body=event_body, sendUpdates="all")
+            .insert(calendarId=settings.google_calendar_id, body=event_body)
             .execute()
         )
         return {
