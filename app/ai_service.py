@@ -104,9 +104,9 @@ ESCALATE to {settings.escalation_contact_name}: custom pricing, multi-branch, co
 DEMO BOOKING (strict process — follow exactly):
 1. User wants demo → call get_demo_slots. You'll get numbered slots back.
 2. Show them as a numbered list: "1. Saturday 28 Jun, 8:30 PM" etc.
-3. Ask "Which slot works for you?"
-4. User says a number → call book_demo with that slot_number.
-NEVER skip steps. NEVER book without showing numbered slots first. NEVER invent slot times.
+3. End with: "Reply with the slot number (1, 2, or 3) that works for you."
+4. NEVER book directly. The system handles booking when the user replies with a number.
+NEVER skip steps. NEVER invent slot times. NEVER say "I've booked" — let the system confirm.
 
 TOOLS: capture_lead, log_objection, get_demo_slots, book_demo (slot_number only), escalate_to_human.
 
@@ -244,6 +244,7 @@ async def _execute_tool(
     db: AsyncSession, contact: Contact, name: str, args: Dict[str, Any]
 ) -> Dict[str, Any]:
     try:
+        args = args or {}  # Llama models sometimes pass None
         if name == "capture_lead":
             level = args.pop("interest_level", None)
             # Groq may pass calls_per_day as string; convert to int or drop.
@@ -280,7 +281,7 @@ async def _execute_tool(
                     {"slot_number": i + 1, "display": s.strftime("%A %d %b, %I:%M %p"), "iso": s.isoformat()}
                     for i, s in enumerate(slots)
                 ],
-                "instruction": "Show ONLY the slot_number and display text. User picks a number, then call book_demo with that slot_number.",
+                "instruction": "Show the numbered slots. End with: 'Reply with the slot number (1, 2, or 3) that works for you.'",
             }
 
         if name == "book_demo":
@@ -498,7 +499,7 @@ async def generate_reply(
                         slots_text = "\n".join(
                             f"{s['slot_number']}. {s['display']}" for s in result["available_slots"]
                         )
-                        extra_info = f"\n\nHere are the available slots:\n{slots_text}\n\nWhich one works for you?"
+                        extra_info = f"\n\nHere are the available slots:\n{slots_text}\n\nReply with the slot number (1, 2, or 3) that works for you."
             
             text = _clean_response(raw_text) + extra_info
             return text.strip() or "Could you tell me a little more about your clinic so I can help?"

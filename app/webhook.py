@@ -228,4 +228,4 @@ async def _format_fresh_slots(contact) -> str:
     slots = await calendar_service.get_available_slots(limit=4)
     _slot_cache[contact.id] = slots
     lines = [f"{i+1}. {s.strftime('%A %d %b, %I:%M %p')}" for i, s in enumerate(slots)]
-    return "Here are the available slots:\n" + "\n".join(lines) + "\n\nWhich one works for you?"
+    return "Here are the available slots:\n" + "\n".join(lines) + "\n\nReply with the slot number (1, 2, or 3) that works for you."
