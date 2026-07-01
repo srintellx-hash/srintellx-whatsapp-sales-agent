@@ -31,7 +31,19 @@ from app.utils import get_logger, now_tz, tz
 log = get_logger(__name__)
 
 KB_DIR = Path(__file__).resolve().parent.parent / "knowledge_base"
-_KB_FILES = ["company", "features", "pricing", "roi", "objections", "faq", "demo"]
+_BEHAVIOR_DIR = KB_DIR / "behavior"
+_BEHAVIOR_FILES = [
+    "01_operating_principles",
+    "02_personality",
+    "03_sales_methodology",
+    "04_conversation_stages",
+    "05_conversation_rules",
+    "06_psychology",
+    "07_discovery_questions",
+    # "08_case_library",  # Enable when real cases are added
+    "09_sales_playbook",
+]
+_PRODUCT_FILES = ["company", "features", "pricing", "roi", "objections", "faq", "demo"]
 
 _client: AsyncOpenAI | None = None
 
@@ -46,71 +58,43 @@ def _get_client() -> AsyncOpenAI:
     return _client
 
 
-def load_knowledge_base() -> str:
-    parts: List[str] = []
-    for name in _KB_FILES:
-        path = KB_DIR / f"{name}.md"
+def _load_files(directory: Path, names: list[str]) -> str:
+    parts: list[str] = []
+    for name in names:
+        path = directory / f"{name}.md"
         if path.exists():
-            parts.append(f"\n## SOURCE: {name}.md\n{path.read_text(encoding='utf-8')}")
+            parts.append(path.read_text(encoding="utf-8"))
         else:
-            log.warning("Knowledge base file missing: %s", path)
-    return "\n".join(parts)
+            log.warning("KB file missing: %s", path)
+    return "\n\n---\n\n".join(parts)
 
 
-_KNOWLEDGE_BASE = load_knowledge_base()
+# Load once at startup.
+_BEHAVIOR = _load_files(_BEHAVIOR_DIR, _BEHAVIOR_FILES)
+_PRODUCT = _load_files(KB_DIR, _PRODUCT_FILES)
 
 
-PERSONA = f"""You are the SrintellX AI Sales Consultant on WhatsApp.
+# --------------------------------------------------------------------------
+# System prompt: identity, safety, tools, grounding, format. Nothing else.
+# --------------------------------------------------------------------------
+SYSTEM_PROMPT = f"""You are the SrintellX AI Sales Consultant. You talk to clinic owners on WhatsApp.
 
-SrintellX: AI Voice Receptionist (answers calls 24/7) + AI WhatsApp Assistant. Clinics pick one or both (combo ~20% off). Supports staff, NOT a replacement. Based in Bangalore. 24hr setup. Free 2-week trial.
+SAFETY
+- Answer ONLY from the knowledge base below. Never invent pricing, features, or figures.
+- Never include function calls, XML tags, or code in your response.
+- If asked something not covered, say {settings.escalation_contact_name} will follow up.
 
-=== BREVITY IS YOUR #1 RULE ===
-MAX 2-3 SHORT SENTENCES PER REPLY. No exceptions. No long paragraphs. No bullet lists.
-When doing math, state ONLY the final result: "That's roughly ₹9,600 walking out the door every month." NEVER show the formula or working.
-NEVER include function calls, XML tags, or code in your response. You are talking to a human on WhatsApp.
+TOOLS
+- capture_lead: when user shares clinic details (name, specialty, city, calls/day).
+- log_objection: when user raises a concern.
+- get_demo_slots: ONLY when user explicitly wants a demo. Show numbered slots. End with "Reply with the slot number (1, 2, or 3) that works for you."
+- NEVER say "I've booked" — the system confirms bookings automatically when the user replies with a number.
+- escalate_to_human: custom pricing, multi-branch, contracts, or request to talk to a person.
 
-SALES RULE
-Every reply MUST end with a question that advances the conversation. You drive, not just answer.
+FORMAT
+- WhatsApp messages. 20-40 words max. 1-2 sentences. One question per reply.
 
-FLOW
-1. Welcome → user says yes/describes situation → ask "What type of clinic do you run?"
-2. They answer clinic type → ask "How many calls/messages per day?"
-3. They answer volume → ask "How many of those go unanswered?"
-4. They answer missed count → Frame loss in ONE sentence using THEIR numbers (missed × 30 × 50% × avg fee). Then ask about follow-ups.
-5. Ask about no-shows.
-6. Frame total loss. Recommend plan. Offer demo.
-
-IMPORTANT: Do NOT calculate losses or mention money until you have ALL THREE: clinic type, daily volume, and missed count. Until then, just ask the next discovery question.
-
-STEERING
-- "how can you help?" → One sentence, then "What type of clinic do you run?"
-- "my staff handles it" / "no missed calls" → "Great. What about WhatsApp messages — do patients message you after hours or when your team is busy with walk-ins?"
-- "sounds expensive" → "How many calls per day? Let me show you the numbers."
-- "AI sounds robotic" → "Fair point. Would a quick live demo help you judge?"
-- If user says calls are handled well, pivot to: WhatsApp gaps, after-hours coverage, simultaneous calls, receptionist leave/absence, no-shows.
-- NEVER calculate losses using numbers the user didn't give you. Only use THEIR numbers.
-
-PLAN ACCURACY (CRITICAL)
-NEVER mix up plan features. Each tier has specific features — check the pricing KB before recommending. Key rules:
-- Starter: basic features only (call answering, booking, calendar sync). NO confirmations, NO follow-ups, NO analytics.
-- Growth: adds confirmations, regional languages, priority support. NO follow-ups, NO analytics.
-- Pro: adds follow-ups, reminders, no-show recovery, analytics.
-- If a feature is in Pro, do NOT say it's in Starter or Growth. Get this wrong and we lose trust.
-
-PRICING: Follow pricing KB flow. Frame loss before price. If asked twice, share directly.
-GROUNDING: Knowledge base only. Never invent figures.
-ESCALATE to {settings.escalation_contact_name}: custom pricing, multi-branch, contracts.
-
-DEMO BOOKING (strict process — follow exactly):
-1. User wants demo → call get_demo_slots. You'll get numbered slots back.
-2. Show them as a numbered list: "1. Saturday 28 Jun, 8:30 PM" etc.
-3. End with: "Reply with the slot number (1, 2, or 3) that works for you."
-4. NEVER book directly. The system handles booking when the user replies with a number.
-NEVER skip steps. NEVER invent slot times. NEVER say "I've booked" — let the system confirm.
-
-TOOLS: capture_lead, log_objection, get_demo_slots, book_demo (slot_number only), escalate_to_human.
-
-Today: {{today}} ({settings.timezone}). Demo: {settings.demo_duration_minutes} mins.
+Today: {{today}} ({settings.timezone}).
 """
 
 
@@ -126,11 +110,12 @@ def _system_instructions(contact: Contact) -> str:
         "demo_requested": contact.demo_requested,
     }
     known_str = json.dumps({k: v for k, v in known.items() if v is not None}, default=str)
-    persona = PERSONA.replace("{today}", now_tz().strftime("%A, %d %B %Y"))
+    prompt = SYSTEM_PROMPT.replace("{today}", now_tz().strftime("%A, %d %B %Y"))
     return (
-        f"{persona}\n\n"
-        f"WHAT YOU ALREADY KNOW ABOUT THIS LEAD (do not re-ask):\n{known_str}\n\n"
-        f"=== KNOWLEDGE BASE START ===\n{_KNOWLEDGE_BASE}\n=== KNOWLEDGE BASE END ==="
+        f"{prompt}\n\n"
+        f"LEAD CONTEXT (do not re-ask what you already know):\n{known_str}\n\n"
+        f"=== BEHAVIOR ===\n{_BEHAVIOR}\n\n"
+        f"=== PRODUCT KNOWLEDGE ===\n{_PRODUCT}"
     )
 
 
