@@ -126,15 +126,20 @@ async def process_message(msg: InboundMessage) -> None:
                 db, contact, MessageRole.user, msg.text, wa_message_id=msg.wa_message_id
             )
 
-            # Heuristic backstops (the AI also does this via tools).
-            otype = classify_objection(msg.text)
-            if otype:
-                await log_objection(db, contact, otype, excerpt=msg.text[:500])
-            await set_interest(db, contact, detect_interest(msg.text))
+            # --- DIRECT SLOT BOOKING (bypasses AI entirely) ---
+            direct_reply = await _try_direct_booking(db, contact, msg.text)
+            if direct_reply:
+                reply = direct_reply
+            else:
+                # Heuristic backstops (the AI also does this via tools).
+                otype = classify_objection(msg.text)
+                if otype:
+                    await log_objection(db, contact, otype, excerpt=msg.text[:500])
+                await set_interest(db, contact, detect_interest(msg.text))
 
-            reply = await generate_reply(
-                db, contact, history_before, msg.text, is_new_conversation
-            )
+                reply = await generate_reply(
+                    db, contact, history_before, msg.text, is_new_conversation
+                )
 
             await save_message(db, contact, MessageRole.assistant, reply)
             await db.commit()
@@ -145,3 +150,82 @@ async def process_message(msg: InboundMessage) -> None:
     # Send outside the DB transaction.
     await whatsapp_client.mark_read(msg.wa_message_id)
     await whatsapp_client.send_text(msg.sender, reply)
+
+
+async def _try_direct_booking(db, contact, text: str) -> str | None:
+    """If user sent a slot number and we have cached slots, book directly.
+    
+    Returns the reply text if booking happened, None otherwise.
+    """
+    from app.ai_service import _slot_cache
+    from app.models import BookingStatus, DemoBooking, InterestLevel
+    from app.calendar_service import calendar_service
+    from app.config import settings
+    from app.lead_service import set_interest, update_lead
+    from datetime import timedelta
+
+    # Check if the message is a slot number (1-9).
+    cleaned = text.strip().lower().replace("slot ", "").replace("option ", "").replace("#", "")
+    try:
+        slot_num = int(cleaned)
+    except ValueError:
+        return None
+
+    if slot_num < 1 or slot_num > 9:
+        return None
+
+    # Check if we have cached slots for this contact.
+    cached = _slot_cache.get(contact.id)
+    if not cached or slot_num > len(cached):
+        return None
+
+    start = cached[slot_num - 1]
+    from app.utils import tz
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz())
+
+    log.info("Direct booking: contact %s picked slot %s → %s", contact.id, slot_num, start)
+
+    # Check if slot is still free.
+    if not await calendar_service.is_slot_free(start):
+        return "That slot was just taken. Let me check what's available.\n\n" + await _format_fresh_slots(contact)
+
+    # Create calendar event.
+    summary = f"SrintellX Demo — {contact.clinic_name or contact.doctor_name or contact.wa_phone}"
+    description = (
+        f"Lead: {contact.doctor_name or '-'} | Clinic: {contact.clinic_name or '-'} "
+        f"| Specialty: {contact.specialty or '-'} | City: {contact.city or '-'} "
+        f"| WhatsApp: {contact.wa_phone}"
+    )
+    event = await calendar_service.create_event(start, summary, description)
+
+    # Save booking to database.
+    end = start + timedelta(minutes=settings.demo_duration_minutes)
+    booking = DemoBooking(
+        contact_id=contact.id,
+        start_time=start,
+        end_time=end,
+        status=BookingStatus.confirmed,
+        google_event_id=event.get("event_id"),
+        meeting_link=event.get("meeting_link"),
+    )
+    db.add(booking)
+    contact.demo_requested = True
+    await set_interest(db, contact, InterestLevel.hot)
+    await db.flush()
+
+    friendly_time = start.strftime("%A %d %b, %I:%M %p")
+    log.info("Demo booked for contact %s at %s (event: %s)", contact.id, friendly_time, event.get("event_id"))
+
+    return f"Your demo is booked for {friendly_time}. You'll hear from us shortly before the session. See you then! 👋"
+
+
+async def _format_fresh_slots(contact) -> str:
+    """Fetch fresh slots and return formatted text."""
+    from app.ai_service import _slot_cache
+    from app.calendar_service import calendar_service
+
+    slots = await calendar_service.get_available_slots(limit=4)
+    _slot_cache[contact.id] = slots
+    lines = [f"{i+1}. {s.strftime('%A %d %b, %I:%M %p')}" for i, s in enumerate(slots)]
+    return "Here are the available slots:\n" + "\n".join(lines) + "\n\nWhich one works for you?"
