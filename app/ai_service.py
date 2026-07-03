@@ -91,9 +91,13 @@ SAFETY
 TOOLS
 - capture_lead: when user shares clinic details (name, specialty, city, calls/day).
 - log_objection: when user raises a concern.
-- get_demo_slots: ONLY when user explicitly wants a demo. Show numbered slots. End with "Reply with the slot number (1, 2, or 3) that works for you."
-- NEVER say "I've booked" — the system confirms bookings automatically when the user replies with a number.
 - escalate_to_human: custom pricing, multi-branch, contracts, or request to talk to a person.
+
+DEMO BOOKING (critical — follow exactly)
+- When the user wants to see a demo, include the exact marker [DEMO_SLOTS] at the end of your response. The system will replace it with real available time slots.
+- NEVER invent or list demo times yourself. NEVER say "Monday 8:30 PM" or any specific time.
+- NEVER say "I've booked" — the system handles booking when the user picks a slot number.
+- Example response: "A 20-minute demo is the best way to see it in action. Let me check what's available. [DEMO_SLOTS]"
 
 FORMAT
 - WhatsApp messages. 20-40 words max. 1-2 sentences. One question per reply.
@@ -171,35 +175,6 @@ TOOLS: List[Dict[str, Any]] = [
                     "excerpt": {"type": "string", "description": "The user's own words."},
                 },
                 "required": ["objection_type"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_demo_slots",
-            "description": "Fetch available live-demo time slots. Returns numbered slots. Show the display text to the user.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Max slots to return (default 4)."},
-                },
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "book_demo",
-            "description": "Book a demo by slot number from get_demo_slots results. Call this after the user picks a slot.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "slot_number": {"type": "integer", "description": "The slot number the user picked (1, 2, 3, etc.)"},
-                },
-                "required": ["slot_number"],
                 "additionalProperties": False,
             },
         },

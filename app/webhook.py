@@ -136,6 +136,11 @@ async def process_message(msg: InboundMessage) -> None:
                     db, contact, history_before, msg.text, is_new_conversation
                 )
 
+                # Replace [DEMO_SLOTS] marker with real calendar slots.
+                if "[DEMO_SLOTS]" in reply:
+                    slots_text = await _format_fresh_slots(contact)
+                    reply = reply.replace("[DEMO_SLOTS]", "\n\n" + slots_text)
+
             await save_message(db, contact, MessageRole.assistant, reply)
             await db.commit()
         except Exception:
