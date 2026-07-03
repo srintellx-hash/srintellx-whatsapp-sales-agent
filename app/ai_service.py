@@ -1,19 +1,17 @@
-"""AI agent built on the Chat Completions API (Groq / OpenAI compatible).
+"""AI agent built on the Chat Completions API (OpenAI / Groq compatible).
 
-Responsibilities:
-  * Load the knowledge base (markdown) once at startup.
-  * Assemble the system instructions from the SrintellX persona + KB + live
-    lead context.
-  * Expose tools the model can call: capture_lead, log_objection,
-    get_demo_slots, book_demo, escalate_to_human.
-  * Run an agent loop that executes tool calls and returns the final reply.
-
-The model is instructed to answer ONLY from the knowledge base and never to
-invent pricing or features.
+Architecture:
+  * Slim system prompt (~100 words): identity, safety, tools, format.
+  * Behavior files (markdown): how to sell — loaded from knowledge_base/behavior/
+  * Product files (markdown): what to sell — loaded from knowledge_base/
+  * Tools: capture_lead, log_objection, get_demo_slots, book_demo, escalate_to_human.
+  * Leaked function call parser: catches and executes Llama-style text leaks.
 """
 from __future__ import annotations
 
 import json
+import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List
@@ -30,6 +28,9 @@ from app.utils import get_logger, now_tz, tz
 
 log = get_logger(__name__)
 
+# --------------------------------------------------------------------------
+# Knowledge base loading.
+# --------------------------------------------------------------------------
 KB_DIR = Path(__file__).resolve().parent.parent / "knowledge_base"
 _BEHAVIOR_DIR = KB_DIR / "behavior"
 _BEHAVIOR_FILES = [
@@ -42,6 +43,8 @@ _BEHAVIOR_FILES = [
     "07_discovery_questions",
     # "08_case_library",  # Enable when real cases are added
     "09_sales_playbook",
+    "response_patterns",
+    "conversation_examples",
 ]
 _PRODUCT_FILES = ["company", "features", "pricing", "roi", "objections", "faq", "demo"]
 
@@ -76,6 +79,7 @@ _PRODUCT = _load_files(KB_DIR, _PRODUCT_FILES)
 
 # --------------------------------------------------------------------------
 # System prompt: identity, safety, tools, grounding, format. Nothing else.
+# All behavior and product knowledge comes from the markdown files.
 # --------------------------------------------------------------------------
 SYSTEM_PROMPT = f"""You are the SrintellX AI Sales Consultant. You talk to clinic owners on WhatsApp.
 
@@ -218,8 +222,24 @@ TOOLS: List[Dict[str, Any]] = [
 
 # --------------------------------------------------------------------------
 # Slot cache: stores last offered demo slots per contact for easy booking.
+# Now includes a timestamp to detect stale caches.
 # --------------------------------------------------------------------------
-_slot_cache: Dict[int, List[datetime]] = {}
+_slot_cache: Dict[int, Dict[str, Any]] = {}
+_CACHE_MAX_AGE = 600  # 10 minutes
+
+
+def _cache_slots(contact_id: int, slots: list) -> None:
+    _slot_cache[contact_id] = {"slots": slots, "timestamp": time.monotonic()}
+
+
+def _get_cached_slots(contact_id: int) -> list | None:
+    entry = _slot_cache.get(contact_id)
+    if not entry:
+        return None
+    if time.monotonic() - entry["timestamp"] > _CACHE_MAX_AGE:
+        log.info("Slot cache stale for contact %s", contact_id)
+        return None
+    return entry["slots"]
 
 
 # --------------------------------------------------------------------------
@@ -230,6 +250,7 @@ async def _execute_tool(
 ) -> Dict[str, Any]:
     try:
         args = args or {}  # Llama models sometimes pass None
+
         if name == "capture_lead":
             level = args.pop("interest_level", None)
             # Groq may pass calls_per_day as string; convert to int or drop.
@@ -258,8 +279,7 @@ async def _execute_tool(
         if name == "get_demo_slots":
             limit = int(args.get("limit", 4))
             slots = await calendar_service.get_available_slots(limit=limit)
-            # Store in cache for easy booking by number.
-            _slot_cache[contact.id] = slots
+            _cache_slots(contact.id, slots)
             return {
                 "ok": True,
                 "available_slots": [
@@ -271,7 +291,7 @@ async def _execute_tool(
 
         if name == "book_demo":
             slot_num = int(args.get("slot_number", 0))
-            cached = _slot_cache.get(contact.id, [])
+            cached = _get_cached_slots(contact.id)
             if not cached or slot_num < 1 or slot_num > len(cached):
                 return {"ok": False, "error": "Invalid slot number. Please call get_demo_slots first."}
             start = cached[slot_num - 1]
@@ -312,7 +332,7 @@ async def _book_demo(db, contact, start, attendee_email):
         f"| Specialty: {contact.specialty or '-'} | City: {contact.city or '-'} "
         f"| WhatsApp: {contact.wa_phone}"
     )
-    event = await calendar_service.create_event(start, summary, description, attendee_email)
+    event = await calendar_service.create_event(start, summary, description)
 
     booking = DemoBooking(
         contact_id=contact.id,
@@ -334,6 +354,43 @@ async def _book_demo(db, contact, start, attendee_email):
 
 
 # --------------------------------------------------------------------------
+# Response cleanup: strip leaked function call syntax.
+# --------------------------------------------------------------------------
+_CLEANUP_PATTERNS = [
+    re.compile(r'</?function[^>]*>(\{.*?\})?', re.DOTALL),
+    re.compile(r'You can (?:also )?use the following function[^.]*\.?', re.IGNORECASE),
+    re.compile(r'[Pp]lease wait[^.]*\.\.\.?'),
+    re.compile(r'Let me (?:check|fetch|get)[^.]*\.\.\.?'),
+    re.compile(r'\{[^}]*"function"[^}]*\}'),
+    re.compile(r'</?tool[^>]*>'),
+]
+
+
+def _parse_leaked_calls(text: str) -> List[tuple]:
+    """Extract function calls leaked as text by Llama models."""
+    results = []
+    for match in re.finditer(r'<function=(\w+)>\s*(\{[^}]*\})', text):
+        name = match.group(1)
+        try:
+            args = json.loads(match.group(2))
+        except json.JSONDecodeError:
+            args = {}
+        results.append((name, args))
+    return results
+
+
+def _clean_response(text: str) -> str:
+    """Strip leaked function calls and artifacts from model output."""
+    if not text:
+        return text
+    for pattern in _CLEANUP_PATTERNS:
+        text = pattern.sub('', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r'  +', ' ', text)
+    return text.strip()
+
+
+# --------------------------------------------------------------------------
 # Welcome message for new conversations.
 # --------------------------------------------------------------------------
 WELCOME_MESSAGE = """Hi there! Welcome to SrintellX 👋
@@ -352,59 +409,8 @@ _GREETING_WORDS = {
 
 
 def _is_simple_greeting(text: str) -> bool:
-    """Check if the message is just a greeting with no substance."""
     cleaned = text.strip().lower().rstrip("!.,?~ ")
     return cleaned in _GREETING_WORDS
-
-
-# --------------------------------------------------------------------------
-# Response cleanup: strip leaked function call syntax from Llama models.
-# --------------------------------------------------------------------------
-import re
-
-_CLEANUP_PATTERNS = [
-    # <function=name>{...}</function> and unclosed variants
-    re.compile(r'</?function[^>]*>(\{.*?\})?', re.DOTALL),
-    # "You can also use the following function..." type text
-    re.compile(r'You can (?:also )?use the following function[^.]*\.?', re.IGNORECASE),
-    # "Please wait for a moment..."
-    re.compile(r'[Pp]lease wait[^.]*\.\.\.?'),
-    # "Let me check..." filler when tool call leaked
-    re.compile(r'Let me (?:check|fetch|get)[^.]*\.\.\.?'),
-    # Any remaining {..."function"...} JSON blobs
-    re.compile(r'\{[^}]*"function"[^}]*\}'),
-    # <tool_call> or similar tags
-    re.compile(r'</?tool[^>]*>'),
-]
-
-
-def _parse_leaked_calls(text: str) -> List[tuple]:
-    """Extract function calls leaked as text by Llama models.
-    
-    Returns list of (function_name, args_dict) tuples.
-    """
-    results = []
-    # Match <function=name>{...}</function> or <function=name>{...}
-    for match in re.finditer(r'<function=(\w+)>\s*(\{[^}]*\})', text):
-        name = match.group(1)
-        try:
-            args = json.loads(match.group(2))
-        except json.JSONDecodeError:
-            args = {}
-        results.append((name, args))
-    return results
-
-
-def _clean_response(text: str) -> str:
-    """Strip leaked function calls and artifacts from model output."""
-    if not text:
-        return text
-    for pattern in _CLEANUP_PATTERNS:
-        text = pattern.sub('', text)
-    # Clean up leftover whitespace.
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    text = re.sub(r'  +', ' ', text)
-    return text.strip()
 
 
 # --------------------------------------------------------------------------
@@ -470,7 +476,7 @@ async def generate_reply(
         # If no tool calls, check for leaked function calls in the text.
         if not message.tool_calls:
             raw_text = (message.content or "").strip()
-            
+
             # Parse and execute any leaked function calls.
             leaked = _parse_leaked_calls(raw_text)
             extra_info = ""
@@ -485,12 +491,11 @@ async def generate_reply(
                             f"{s['slot_number']}. {s['display']}" for s in result["available_slots"]
                         )
                         extra_info = f"\n\nHere are the available slots:\n{slots_text}\n\nReply with the slot number (1, 2, or 3) that works for you."
-            
+
             text = _clean_response(raw_text) + extra_info
             return text.strip() or "Could you tell me a little more about your clinic so I can help?"
 
         # Append the assistant message (with tool_calls) to the conversation.
-        # Build a clean dict — model_dump() includes fields Groq doesn't support.
         assistant_msg: Dict[str, Any] = {"role": "assistant", "content": message.content or ""}
         assistant_msg["tool_calls"] = [
             {

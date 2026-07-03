@@ -4,13 +4,14 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict, deque
+from datetime import timedelta
 from typing import Deque, Dict
 
 from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai_service import generate_reply
+from app.ai_service import generate_reply, _cache_slots, _get_cached_slots
 from app.config import settings
 from app.conversation_service import (
     get_or_create_contact,
@@ -31,7 +32,6 @@ router = APIRouter(tags=["webhook"])
 
 # --------------------------------------------------------------------------
 # Lightweight in-memory rate limiter (per sender).
-# For multi-instance production use a shared store (e.g. Redis).
 # --------------------------------------------------------------------------
 _WINDOW_SECONDS = 60
 _hits: Dict[str, Deque[float]] = defaultdict(deque)
@@ -52,9 +52,7 @@ def _rate_limited(sender: str) -> bool:
 # GET /webhook — Meta verification handshake.
 # --------------------------------------------------------------------------
 @router.get("/webhook")
-async def verify_webhook(
-    request: Request,
-) -> Response:
+async def verify_webhook(request: Request) -> Response:
     params = request.query_params
     mode = params.get("hub.mode")
     token = params.get("hub.verify_token")
@@ -84,12 +82,10 @@ async def receive_webhook(
         payload = WAWebhook.model_validate_json(raw)
     except Exception as exc:
         log.warning("Malformed webhook payload: %s", exc)
-        # 200 so Meta does not retry a permanently broken payload.
         return PlainTextResponse("ok", status_code=200)
 
     messages = parse_inbound_messages(payload)
 
-    # Process in the background so we ACK Meta within its timeout window.
     for msg in messages:
         asyncio.create_task(_safe_process(msg))
 
@@ -109,9 +105,8 @@ async def process_message(msg: InboundMessage) -> None:
         log.warning("Rate limit hit for %s; dropping message.", msg.sender)
         return
 
-    async with AsyncSessionLocal() as db:  # type: AsyncSession
+    async with AsyncSessionLocal() as db:
         try:
-            # Idempotency: skip duplicates Meta may redeliver.
             if await message_already_processed(db, msg.wa_message_id):
                 log.info("Duplicate message %s ignored.", msg.wa_message_id)
                 return
@@ -131,7 +126,7 @@ async def process_message(msg: InboundMessage) -> None:
             if direct_reply:
                 reply = direct_reply
             else:
-                # Heuristic backstops (the AI also does this via tools).
+                # Heuristic backstops.
                 otype = classify_objection(msg.text)
                 if otype:
                     await log_objection(db, contact, otype, excerpt=msg.text[:500])
@@ -147,22 +142,15 @@ async def process_message(msg: InboundMessage) -> None:
             await db.rollback()
             raise
 
-    # Send outside the DB transaction.
     await whatsapp_client.mark_read(msg.wa_message_id)
     await whatsapp_client.send_text(msg.sender, reply)
 
 
 async def _try_direct_booking(db, contact, text: str) -> str | None:
-    """If user sent a slot number and we have cached slots, book directly.
-    
-    Returns the reply text if booking happened, None otherwise.
-    """
-    from app.ai_service import _slot_cache
+    """If user sent a slot number and we have fresh cached slots, book directly."""
     from app.models import BookingStatus, DemoBooking, InterestLevel
     from app.calendar_service import calendar_service
-    from app.config import settings
-    from app.lead_service import set_interest, update_lead
-    from datetime import timedelta
+    from app.lead_service import set_interest as _set_interest
 
     # Check if the message is a slot number (1-9).
     cleaned = text.strip().lower().replace("slot ", "").replace("option ", "").replace("#", "")
@@ -174,21 +162,21 @@ async def _try_direct_booking(db, contact, text: str) -> str | None:
     if slot_num < 1 or slot_num > 9:
         return None
 
-    # Check if we have cached slots for this contact.
-    cached = _slot_cache.get(contact.id)
+    # Check if we have FRESH cached slots for this contact.
+    cached = _get_cached_slots(contact.id)
     if not cached or slot_num > len(cached):
         return None
 
     start = cached[slot_num - 1]
-    from app.utils import tz
+    from app.utils import tz as get_tz
     if start.tzinfo is None:
-        start = start.replace(tzinfo=tz())
+        start = start.replace(tzinfo=get_tz())
 
     log.info("Direct booking: contact %s picked slot %s → %s", contact.id, slot_num, start)
 
     # Check if slot is still free.
     if not await calendar_service.is_slot_free(start):
-        return "That slot was just taken. Let me check what's available.\n\n" + await _format_fresh_slots(contact)
+        return "That slot was just taken.\n\n" + await _format_fresh_slots(contact)
 
     # Create calendar event.
     summary = f"SrintellX Demo — {contact.clinic_name or contact.doctor_name or contact.wa_phone}"
@@ -211,7 +199,7 @@ async def _try_direct_booking(db, contact, text: str) -> str | None:
     )
     db.add(booking)
     contact.demo_requested = True
-    await set_interest(db, contact, InterestLevel.hot)
+    await _set_interest(db, contact, InterestLevel.hot)
     await db.flush()
 
     friendly_time = start.strftime("%A %d %b, %I:%M %p")
@@ -222,10 +210,9 @@ async def _try_direct_booking(db, contact, text: str) -> str | None:
 
 async def _format_fresh_slots(contact) -> str:
     """Fetch fresh slots and return formatted text."""
-    from app.ai_service import _slot_cache
     from app.calendar_service import calendar_service
 
     slots = await calendar_service.get_available_slots(limit=4)
-    _slot_cache[contact.id] = slots
+    _cache_slots(contact.id, slots)
     lines = [f"{i+1}. {s.strftime('%A %d %b, %I:%M %p')}" for i, s in enumerate(slots)]
     return "Here are the available slots:\n" + "\n".join(lines) + "\n\nReply with the slot number (1, 2, or 3) that works for you."
